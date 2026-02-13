@@ -1,0 +1,20 @@
+# Maxfiy ma'lumotlar
+.env
+credentials.json
+Credentials.json
+
+# Python vaqtinchalik fayllari
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# Skrinshotlar (agar papkada qolib ketgan bo'lsa)
+*.png
+
+# Playwright va brauzer qoldiqlari
+.auth/
