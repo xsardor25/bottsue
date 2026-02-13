@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # --- SOZLAMALAR ---
-TOKEN = "8442363419:AAF9x4XoRLdUjtm5G8Nep5sZkwHdRIYECck"
+TOKEN = "8442363419:AAFpVXcRKPhpbk9F33acO1mo7y6py9FRmkk"
 ADMIN_ID = 7878916781
 JSON_FILE = "tsuedata.json"
 SHEET_ID = "1vZLVKA__HPQAL70HfzI0eYu3MpsE-Namho6D-2RLIYw"
@@ -190,3 +190,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
