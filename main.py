@@ -14,22 +14,24 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from playwright.async_api import async_playwright
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# Railway'dagi Variables-ni yuklash
+# Railway Variables o'qilishi uchun eng muhim qator
 load_dotenv()
 
 warnings.filterwarnings("ignore", category=UserWarning)
 logging.basicConfig(level=logging.INFO)
 
-# --- SOZLAMALAR (Railway Variables-dan olinadi) ---
-TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
-JSON_FILE = os.getenv("JSON_FILE", "tsuedata.json")
-SHEET_ID = os.getenv("SHEET_ID")
-CREDENTIALS_FILE = os.getenv("CREDENTIALS_FILE", "credentials.json")
+# --- SOZLAMALAR ---
+# Railway panelida qanday yozilgan bo'lsa, shunday olinadi
+TOKEN = os.environ.get("BOT_TOKEN") 
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 7878916781))
+JSON_FILE = os.environ.get("JSON_FILE", "tsuedata.json")
+SHEET_ID = os.environ.get("SHEET_ID")
+CREDENTIALS_FILE = os.environ.get("CREDENTIALS_FILE", "credentials.json")
 
-# Token tekshiruvi
+# Tokenni tekshirish
 if not TOKEN:
     logging.error("❌ BOT_TOKEN topilmadi! Railway Variables-ni tekshiring.")
+    # Agar token None bo'lsa, pastdagi kodlar xato bermasligi uchun botni to'xtatamiz
     exit(1)
 
 bot = Bot(token=TOKEN)
@@ -38,18 +40,20 @@ scheduler = AsyncIOScheduler()
 
 chat_selected_group = {} 
 
-# --- GOOGLE SHEETS ULANISHI ---
+# --- GOOGLE SHEETS ---
 def setup_google_sheets():
     try:
-        if not os.path.exists(CREDENTIALS_FILE):
-            logging.error(f"❌ {CREDENTIALS_FILE} topilmadi!")
+        # Fayl nomi 'Credentials.json' yoki 'credentials.json' ekanligini tekshiring
+        c_file = CREDENTIALS_FILE if os.path.exists(CREDENTIALS_FILE) else "Credentials.json"
+        if not os.path.exists(c_file):
+            logging.error(f"❌ {c_file} topilmadi!")
             return None
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
+        creds = ServiceAccountCredentials.from_json_keyfile_name(c_file, scope)
         client = gspread.authorize(creds)
         return client.open_by_key(SHEET_ID).sheet1
     except Exception as e:
-        logging.error(f"❌ Sheets xatosi: {e}")
+        logging.error(f"❌ Google Sheets ulanishda xato: {e}")
         return None
 
 sheet_instance = setup_google_sheets()
@@ -65,10 +69,9 @@ def save_user_log(user_id, username, full_name, faculty, group):
         except Exception as e:
             logging.error(f"❌ Log saqlashda xato: {e}")
 
-# --- SKRINSHOT (PLAYWRIGHT) ---
+# --- SKRINSHOT ---
 async def take_screenshot_optimized(url, filename):
     async with async_playwright() as p:
-        # Railway uchun --no-sandbox argumenti shart
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
         context = await browser.new_context(viewport={'width': 1280, 'height': 800}, device_scale_factor=2)
         page = await context.new_page()
@@ -93,29 +96,17 @@ async def send_auto_timetable(chat_id, url, group):
     except Exception as e:
         logging.error(f"❌ Avto-yuborishda xato: {e}")
 
-# --- ADMIN PANEL ---
-@dp.message(Command("admin"), F.from_user.id == ADMIN_ID)
-async def admin_panel(message: types.Message):
-    kb = InlineKeyboardBuilder()
-    kb.add(types.InlineKeyboardButton(text="📊 Statistika", callback_data="admin_stats"))
-    await message.answer("🛠 Admin paneli", reply_markup=kb.as_markup())
-
-@dp.callback_query(F.data == "admin_stats")
-async def admin_stats(callback: types.CallbackQuery):
-    if sheet_instance:
-        users = len(set(sheet_instance.col_values(2)[1:]))
-        await callback.message.answer(f"👤 Foydalanuvchilar: {users}")
-    await callback.answer()
-
-# --- BOT BUYRUQLARI ---
+# --- BOT INTERFEYSI ---
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     kb = InlineKeyboardBuilder()
     kb.add(types.InlineKeyboardButton(text="🇺🇿 O'zbek tili", callback_data="lang_uz"))
-    await message.answer("Assalomu alaykum! Tilni tanlang:", reply_markup=kb.as_markup())
+    await message.answer("Assalomu alaykum! Jadvalni ko'rish uchun tilni tanlang:", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data == "lang_uz")
-async def lang_uz(callback: types.CallbackQuery):
+async def lang_callback(callback: types.CallbackQuery):
+    if not os.path.exists(JSON_FILE):
+        return await callback.message.answer(f"❌ {JSON_FILE} topilmadi!")
     with open(JSON_FILE, 'r', encoding='utf-8') as f: data = json.load(f)
     kb = InlineKeyboardBuilder()
     for fak in data.keys():
@@ -161,26 +152,6 @@ async def group_callback(callback: types.CallbackQuery):
         await callback.message.answer(f"Xato: {e}")
     finally:
         await status.delete()
-
-# --- AVTO-YUBORISH SOZLAMALARI ---
-@dp.message(Command(re.compile(r"sethour|setday")))
-async def set_auto(message: types.Message, command: CommandObject):
-    chat_id = message.chat.id
-    if chat_id not in chat_selected_group or not command.args:
-        return await message.answer("❌ Guruhni tanlang va vaqtni kiriting (masalan: /sethour 2)")
-    
-    n = int(command.args)
-    job_id = f"job_{chat_id}"
-    u = chat_selected_group[chat_id]
-    
-    if scheduler.get_job(job_id): scheduler.remove_job(job_id)
-    
-    if "hour" in command.command:
-        scheduler.add_job(send_auto_timetable, "interval", hours=n, args=[chat_id, u['url'], u['group']], id=job_id)
-    else:
-        scheduler.add_job(send_auto_timetable, "interval", days=n, args=[chat_id, u['url'], u['group']], id=job_id)
-    
-    await message.answer(f"✅ Har {n} {command.command[3:]}da yuboriladi.")
 
 async def main():
     scheduler.start()
