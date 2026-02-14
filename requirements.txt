@@ -5,3 +5,5 @@ apscheduler
 playwright
 python-dotenv
 pytz
+tzdata
+
