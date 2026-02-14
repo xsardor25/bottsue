@@ -7,20 +7,19 @@ from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.exceptions import TelegramBadRequest, TelegramConflictError
+from aiogram.exceptions import TelegramBadRequest
 from playwright.async_api import async_playwright
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# Logs
+# Logs sozlamalari
 logging.basicConfig(level=logging.INFO)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # --- SOZLAMALAR ---
-TOKEN = "8442363419:AAFpVXcRKPhpbk9F33acO1mo7y6py9FRmkk"
+TOKEN = "8442363419:AAHln5Er1KVf2YATURL9aoFMaESR1D5zGAI"
 JSON_FILE = "tsuedata.json"
 SHEET_ID = "1vZLVKA__HPQAL70HfzI0eYu3MpsE-Namho6D-2RLIYw"
 CREDENTIALS_FILE = "credentials.json"
-
 TASHKENT_TZ = pytz.timezone('Asia/Tashkent')
 
 bot = Bot(token=TOKEN)
@@ -30,6 +29,7 @@ scheduler = AsyncIOScheduler(timezone=TASHKENT_TZ)
 class GroupSetup(StatesGroup):
     waiting_for_time = State()
 
+# Xotira va Kesh
 screenshot_cache = {} 
 user_settings = {}    
 favorites_db = {}     
@@ -62,14 +62,21 @@ MESSAGES = {
     }
 }
 
-# --- XAVFSIZLIK: LUG'ATNI TEKSHIRISH ---
+# --- 1. REKLAMA MATNI FUNKSIYASI ---
+def get_caption(group_name):
+    return (
+        f"✅ **Guruh: {group_name}**\n\n"
+        f"🤖 @tsuetimebot\n\n"
+        f"Botni guruhga sozlang, jadvalni avtomatik yuklang:\n"
+        f"👉 [Batafsil ma'lumot](https://telegra.ph/jadvalni-gurugda-sozlash-02-14)"
+    )
+
+# --- 2. YORDAMCHI FUNKSIYALAR ---
 def ensure_settings(chat_id):
-    """Chat ID lug'atda borligini tekshiradi va xatolikni oldini oladi"""
     if chat_id not in user_settings:
         user_settings[chat_id] = {'lang': 'uz', 'last_msg': None, 'last_pic': None}
     return user_settings[chat_id]
 
-# --- GOOGLE SHEETS ---
 def setup_sheets():
     try:
         if not os.path.exists(CREDENTIALS_FILE): return None
@@ -119,7 +126,7 @@ async def delete_old(chat_id):
                 settings[key] = None
             except: pass
 
-# --- HANDLERLAR ---
+# --- 3. HANDLERLAR ---
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     ensure_settings(message.chat.id)
@@ -137,7 +144,6 @@ async def set_lang(callback: types.CallbackQuery):
     lang = callback.data.split("_")[1]
     settings = ensure_settings(callback.message.chat.id)
     settings['lang'] = lang
-    
     with open(JSON_FILE, 'r', encoding='utf-8') as f: data = json.load(f)
     builder = InlineKeyboardBuilder()
     for fak in data.keys(): builder.row(types.InlineKeyboardButton(text=fak.upper(), callback_data=f"fak_{fak}"))
@@ -193,7 +199,6 @@ async def day_select(callback: types.CallbackQuery, state: FSMContext):
     for t in ["08:00", "10:00", "12:00", "16:00", "20:00"]: 
         builder.add(types.InlineKeyboardButton(text=t, callback_data=f"st_{t}"))
     builder.adjust(2)
-    
     now_str = datetime.now(TASHKENT_TZ).strftime("%H:%M")
     await state.set_state(GroupSetup.waiting_for_time)
     await callback.message.edit_text(MESSAGES[lang]['select_time'].format(now=now_str), reply_markup=builder.as_markup())
@@ -217,19 +222,8 @@ async def finalize_setup(message, state, v_time):
     data = await state.get_data()
     h, m = map(int, v_time.split(":"))
     job_id = f"job_{message.chat.id}"
-    
     if scheduler.get_job(job_id): scheduler.remove_job(job_id)
-    
-    scheduler.add_job(
-        send_timetable_auto, 
-        "cron", 
-        day_of_week=int(data['day']), 
-        hour=h, 
-        minute=m, 
-        args=[message.chat.id, data['url'], data['group']], 
-        id=job_id
-    )
-    
+    scheduler.add_job(send_timetable_auto, "cron", day_of_week=int(data['day']), hour=h, minute=m, args=[message.chat.id, data['url'], data['group']], id=job_id)
     await message.answer(MESSAGES[lang]['group_saved'].format(day=DAYS[int(data['day'])], time=v_time))
     await state.clear()
 
@@ -243,6 +237,7 @@ async def my_table(message: types.Message):
     if uid in favorites_db: await send_timetable(message.chat.id, favorites_db[uid], "Sevimli", lang)
     else: await message.answer(MESSAGES[lang]['no_fav'])
 
+# --- 4. YUBORISH FUNKSIYALARI ---
 async def send_timetable(chat_id, url, group, lang, fak=""):
     settings = ensure_settings(chat_id)
     await delete_old(chat_id)
@@ -251,9 +246,11 @@ async def send_timetable(chat_id, url, group, lang, fak=""):
     if fak: kb.row(types.InlineKeyboardButton(text=MESSAGES[lang]['fav_btn'], callback_data=f"sv_{fak}_{group}"))
     kb.row(types.InlineKeyboardButton(text=MESSAGES[lang]['menu'], callback_data="lang_"+lang))
     
+    caption = get_caption(group)
+
     if url in screenshot_cache and (now - screenshot_cache[url]['time']) < 3600:
         try:
-            sent = await bot.send_photo(chat_id, screenshot_cache[url]['id'], caption=f"✅ {group}", reply_markup=kb.as_markup())
+            sent = await bot.send_photo(chat_id, screenshot_cache[url]['id'], caption=caption, reply_markup=kb.as_markup(), parse_mode="Markdown")
             settings['last_pic'] = sent.message_id
             return
         except: pass
@@ -262,7 +259,7 @@ async def send_timetable(chat_id, url, group, lang, fak=""):
     fname = f"t_{chat_id}.png"
     try:
         await take_screenshot(url, fname)
-        sent = await bot.send_photo(chat_id, types.FSInputFile(fname), caption=f"✅ {group}", reply_markup=kb.as_markup())
+        sent = await bot.send_photo(chat_id, types.FSInputFile(fname), caption=caption, reply_markup=kb.as_markup(), parse_mode="Markdown")
         screenshot_cache[url] = {"id": sent.photo[-1].file_id, "time": now}
         settings['last_pic'] = sent.message_id
         if os.path.exists(fname): os.remove(fname)
@@ -275,7 +272,7 @@ async def send_timetable_auto(chat_id, url, group):
     fname = f"auto_{chat_id}.png"
     try:
         await take_screenshot(url, fname)
-        await bot.send_photo(chat_id, types.FSInputFile(fname), caption=f"🔔 Haftalik avtomatik jadval: {group}")
+        await bot.send_photo(chat_id, types.FSInputFile(fname), caption=get_caption(group), parse_mode="Markdown")
         if os.path.exists(fname): os.remove(fname)
     except: pass
 
@@ -292,15 +289,12 @@ async def save_fav(callback: types.CallbackQuery):
         save_to_sheets(callback.from_user, fak, url)
         await callback.answer(MESSAGES[lang]['fav_ok'], show_alert=True)
 
+# --- 5. ASOSIY ISHGA TUSHIRISH ---
 async def main():
-    # Eng muhim qism: Konfliktni oldini olish
     await bot.delete_webhook(drop_pending_updates=True)
-    scheduler.start()
-    logging.info("🚀 Bot ishga tushdi!")
+    if not scheduler.running: scheduler.start()
+    logging.info("🚀 Bot barcha funksiyalar bilan ishga tushdi!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logging.info("Bot to'xtatildi")
+    asyncio.run(main())
