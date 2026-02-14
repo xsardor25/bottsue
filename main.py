@@ -1,4 +1,11 @@
-import json, asyncio, os, logging, warnings, gspread, time, re
+import json
+import asyncio
+import os
+import logging
+import warnings
+import gspread
+import time
+import re
 from datetime import datetime
 from oauth2client.service_account import ServiceAccountCredentials
 from aiogram import Bot, Dispatcher, types, F
@@ -9,7 +16,7 @@ from aiogram.fsm.state import State, StatesGroup
 from playwright.async_api import async_playwright
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# Logs
+# Logs sozlamalari
 logging.basicConfig(level=logging.INFO)
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -36,26 +43,26 @@ DAYS = {0: "Dushanba", 1: "Seshanba", 2: "Chorshanba", 3: "Payshanba", 4: "Juma"
 MESSAGES = {
     'uz': {
         'start': "Assalomu alaykum! Fakultetni tanlang:",
-        'select_day': "Haftaning qaysi kuni jadval yuborilsin?",
-        'select_time': "Vaqtni tanlang yoki o'zingiz yozing (masalan: 14:11):",
+        'select_day': "📅 Haftaning qaysi kuni jadval yuborilsin?",
+        'select_time': "⏰ Vaqtni tanlang yoki o'zingiz yozing (masalan: 14:20):",
         'loading': "⏳ Jadval tayyorlanmoqda...",
         'menu': "🏠 Asosiy menyu",
         'fav_btn': "⭐ Sevimlilarga saqlash",
         'fav_ok': "✅ Guruh saqlandi! Endi /my_table orqali kirishingiz mumkin.",
         'no_fav': "❌ Sizda saqlangan guruh yo'q.",
-        'error': "❌ Xatolik yuz berdi.",
+        'error': "❌ Xatolik yuz berdi. Qaytadan urinib ko'ring.",
         'group_saved': "✅ Sozlamalar saqlandi! Har {day} kuni soat {time}da yuboriladi."
     },
     'ru': {
         'start': "Выберите факультет:",
         'select_day': "В какой день недели отправлять?",
-        'select_time': "Выберите время или введите сами (напр: 14:11):",
+        'select_time': "Выберите время или введите сами (напр: 14:20):",
         'loading': "⏳ Расписание готовится...",
         'menu': "🏠 Главное меню",
         'fav_btn': "⭐ Сохранить в избранное",
         'fav_ok': "✅ Группа сохранена! Используйте /my_table.",
         'no_fav': "❌ У вас нет сохраненной группы.",
-        'error': "❌ Ошибка.",
+        'error': "❌ Ошибка. Попробуйте снова.",
         'group_saved': "✅ Сохранено! Будет отправляться в {day} в {time}."
     }
 }
@@ -97,7 +104,7 @@ async def take_screenshot(url, filename):
         page = await browser.new_page(viewport={'width': 1280, 'height': 800}, device_scale_factor=2)
         try:
             await page.goto(url, wait_until="networkidle", timeout=60000)
-            await page.add_style_tag(content=".no-print, .main-menu, .footer, #header { display: none !important; }")
+            await page.add_style_tag(content=".no-print, .main-menu, .footer, #header { display: none !important; } body { background: white !important; }")
             target = await page.query_selector(".tt-grid-container")
             await (target or page).screenshot(path=filename)
         finally: await browser.close()
@@ -180,9 +187,12 @@ async def time_btn(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.message(GroupSetup.waiting_for_time)
 async def time_input(message: types.Message, state: FSMContext):
-    if re.match(r'^([01]?[0-9]|2[0-3]):[0-5][0-9]$', message.text.strip()):
-        await finalize(message, state, message.text.strip())
-    else: await message.answer("HH:MM formatda yozing!")
+    v_time = message.text.strip().replace(".", ":").replace("-", ":")
+    if re.match(r'^([01]?[0-9]|2[0-3]):[0-5][0-9]$', v_time):
+        if len(v_time.split(":")[0]) == 1: v_time = "0" + v_time
+        await finalize(message, state, v_time)
+    else:
+        await message.answer("❌ Noto'g'ri format! Iltimos, HH:MM ko'rinishida yozing (masalan: 14:20)")
 
 async def finalize(message, state, v_time):
     lang = user_settings.get(message.chat.id, {}).get('lang', 'uz')
@@ -196,7 +206,8 @@ async def finalize(message, state, v_time):
 
 @dp.message(Command("my_table"))
 async def my_table(message: types.Message):
-    lang = user_settings.get(message.chat.id, {}).get('lang', 'uz')
+    if message.chat.id not in user_settings: user_settings[message.chat.id] = {'lang': 'uz'}
+    lang = user_settings[message.chat.id].get('lang', 'uz')
     uid = str(message.from_user.id)
     try: await message.delete()
     except: pass
@@ -211,9 +222,11 @@ async def send_timetable(chat_id, url, group, lang, fak=""):
     kb.row(types.InlineKeyboardButton(text=MESSAGES[lang]['menu'], callback_data="lang_"+lang))
     
     if url in screenshot_cache and (now - screenshot_cache[url]['time']) < 3600:
-        sent = await bot.send_photo(chat_id, screenshot_cache[url]['id'], caption=f"✅ {group}", reply_markup=kb.as_markup())
-        user_settings[chat_id]['last_pic'] = sent.message_id
-        return
+        try:
+            sent = await bot.send_photo(chat_id, screenshot_cache[url]['id'], caption=f"✅ {group}", reply_markup=kb.as_markup())
+            user_settings[chat_id]['last_pic'] = sent.message_id
+            return
+        except: pass
 
     status = await bot.send_message(chat_id, MESSAGES[lang]['loading'])
     fname = f"t_{chat_id}.png"
@@ -232,7 +245,7 @@ async def send_timetable_auto(chat_id, url, group):
     fname = f"a_{chat_id}.png"
     try:
         await take_screenshot(url, fname)
-        await bot.send_photo(chat_id, types.FSInputFile(fname), caption=f"🔔 Avtomatik: {group}")
+        await bot.send_photo(chat_id, types.FSInputFile(fname), caption=f"🔔 Avtomatik jadval: {group}")
         os.remove(fname)
     except: pass
 
