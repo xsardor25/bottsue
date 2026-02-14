@@ -7,11 +7,11 @@ from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramConflictError
 from playwright.async_api import async_playwright
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# Logs sozlamalari
+# Logs
 logging.basicConfig(level=logging.INFO)
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -21,18 +21,15 @@ JSON_FILE = "tsuedata.json"
 SHEET_ID = "1vZLVKA__HPQAL70HfzI0eYu3MpsE-Namho6D-2RLIYw"
 CREDENTIALS_FILE = "credentials.json"
 
-# Vaqt mintaqasi (Asia/Tashkent)
 TASHKENT_TZ = pytz.timezone('Asia/Tashkent')
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-# Schedulerni vaqt mintaqasi bilan yaratish
 scheduler = AsyncIOScheduler(timezone=TASHKENT_TZ)
 
 class GroupSetup(StatesGroup):
     waiting_for_time = State()
 
-# Xotira va Kesh
 screenshot_cache = {} 
 user_settings = {}    
 favorites_db = {}     
@@ -65,12 +62,14 @@ MESSAGES = {
     }
 }
 
-# --- YORDAMCHI FUNKSIYALAR ---
-def get_user_lang(chat_id):
+# --- XAVFSIZLIK: LUG'ATNI TEKSHIRISH ---
+def ensure_settings(chat_id):
+    """Chat ID lug'atda borligini tekshiradi va xatolikni oldini oladi"""
     if chat_id not in user_settings:
-        user_settings[chat_id] = {'lang': 'uz'}
-    return user_settings[chat_id]['lang']
+        user_settings[chat_id] = {'lang': 'uz', 'last_msg': None, 'last_pic': None}
+    return user_settings[chat_id]
 
+# --- GOOGLE SHEETS ---
 def setup_sheets():
     try:
         if not os.path.exists(CREDENTIALS_FILE): return None
@@ -112,14 +111,18 @@ async def take_screenshot(url, filename):
         finally: await browser.close()
 
 async def delete_old(chat_id):
-    if chat_id in user_settings:
-        for key in ['last_pic', 'last_msg']:
-            try: await bot.delete_message(chat_id, user_settings[chat_id].get(key))
+    settings = ensure_settings(chat_id)
+    for key in ['last_pic', 'last_msg']:
+        if settings.get(key):
+            try: 
+                await bot.delete_message(chat_id, settings[key])
+                settings[key] = None
             except: pass
 
 # --- HANDLERLAR ---
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
+    ensure_settings(message.chat.id)
     await delete_old(message.chat.id)
     try: await message.delete()
     except: pass
@@ -127,12 +130,14 @@ async def start_cmd(message: types.Message):
     builder.row(types.InlineKeyboardButton(text="🇺🇿 O'zbek", callback_data="lang_uz"),
                 types.InlineKeyboardButton(text="🇷🇺 Русский", callback_data="lang_ru"))
     sent = await message.answer("Tilni tanlang / Выберите язык:", reply_markup=builder.as_markup())
-    user_settings[message.chat.id] = {'last_msg': sent.message_id, 'lang': 'uz'}
+    user_settings[message.chat.id]['last_msg'] = sent.message_id
 
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_lang(callback: types.CallbackQuery):
     lang = callback.data.split("_")[1]
-    user_settings[callback.message.chat.id]['lang'] = lang
+    settings = ensure_settings(callback.message.chat.id)
+    settings['lang'] = lang
+    
     with open(JSON_FILE, 'r', encoding='utf-8') as f: data = json.load(f)
     builder = InlineKeyboardBuilder()
     for fak in data.keys(): builder.row(types.InlineKeyboardButton(text=fak.upper(), callback_data=f"fak_{fak}"))
@@ -141,7 +146,8 @@ async def set_lang(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("fak_"))
 async def fak_select(callback: types.CallbackQuery):
-    lang = get_user_lang(callback.message.chat.id)
+    settings = ensure_settings(callback.message.chat.id)
+    lang = settings['lang']
     fak = callback.data.split("_")[1]
     with open(JSON_FILE, 'r', encoding='utf-8') as f: data = json.load(f)
     builder = InlineKeyboardBuilder()
@@ -151,7 +157,8 @@ async def fak_select(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("kurs_"))
 async def kurs_select(callback: types.CallbackQuery):
-    lang = get_user_lang(callback.message.chat.id)
+    settings = ensure_settings(callback.message.chat.id)
+    lang = settings['lang']
     _, fak, kurs = callback.data.split("_")
     with open(JSON_FILE, 'r', encoding='utf-8') as f: data = json.load(f)
     builder = InlineKeyboardBuilder()
@@ -163,7 +170,8 @@ async def kurs_select(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("gr_"))
 async def group_select(callback: types.CallbackQuery, state: FSMContext):
     chat_id = callback.message.chat.id
-    lang = get_user_lang(chat_id)
+    settings = ensure_settings(chat_id)
+    lang = settings['lang']
     _, fak, kurs, group = callback.data.split("_")
     with open(JSON_FILE, 'r', encoding='utf-8') as f: data = json.load(f)
     url = data[fak][kurs][group]
@@ -178,7 +186,8 @@ async def group_select(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("day_"))
 async def day_select(callback: types.CallbackQuery, state: FSMContext):
-    lang = get_user_lang(callback.message.chat.id)
+    settings = ensure_settings(callback.message.chat.id)
+    lang = settings['lang']
     await state.update_data(day=callback.data.split("_")[1])
     builder = InlineKeyboardBuilder()
     for t in ["08:00", "10:00", "12:00", "16:00", "20:00"]: 
@@ -203,7 +212,8 @@ async def time_input(message: types.Message, state: FSMContext):
         await message.answer("❌ HH:MM formatda yozing (masalan 14:20)!")
 
 async def finalize_setup(message, state, v_time):
-    lang = get_user_lang(message.chat.id)
+    settings = ensure_settings(message.chat.id)
+    lang = settings['lang']
     data = await state.get_data()
     h, m = map(int, v_time.split(":"))
     job_id = f"job_{message.chat.id}"
@@ -225,7 +235,8 @@ async def finalize_setup(message, state, v_time):
 
 @dp.message(Command("my_table"))
 async def my_table(message: types.Message):
-    lang = get_user_lang(message.chat.id)
+    settings = ensure_settings(message.chat.id)
+    lang = settings['lang']
     uid = str(message.from_user.id)
     try: await message.delete()
     except: pass
@@ -233,6 +244,7 @@ async def my_table(message: types.Message):
     else: await message.answer(MESSAGES[lang]['no_fav'])
 
 async def send_timetable(chat_id, url, group, lang, fak=""):
+    settings = ensure_settings(chat_id)
     await delete_old(chat_id)
     now = time.time()
     kb = InlineKeyboardBuilder()
@@ -242,7 +254,7 @@ async def send_timetable(chat_id, url, group, lang, fak=""):
     if url in screenshot_cache and (now - screenshot_cache[url]['time']) < 3600:
         try:
             sent = await bot.send_photo(chat_id, screenshot_cache[url]['id'], caption=f"✅ {group}", reply_markup=kb.as_markup())
-            user_settings[chat_id]['last_pic'] = sent.message_id
+            settings['last_pic'] = sent.message_id
             return
         except: pass
 
@@ -252,7 +264,7 @@ async def send_timetable(chat_id, url, group, lang, fak=""):
         await take_screenshot(url, fname)
         sent = await bot.send_photo(chat_id, types.FSInputFile(fname), caption=f"✅ {group}", reply_markup=kb.as_markup())
         screenshot_cache[url] = {"id": sent.photo[-1].file_id, "time": now}
-        user_settings[chat_id]['last_pic'] = sent.message_id
+        settings['last_pic'] = sent.message_id
         if os.path.exists(fname): os.remove(fname)
     except: await bot.send_message(chat_id, MESSAGES[lang]['error'])
     finally:
@@ -269,7 +281,8 @@ async def send_timetable_auto(chat_id, url, group):
 
 @dp.callback_query(F.data.startswith("sv_"))
 async def save_fav(callback: types.CallbackQuery):
-    lang = get_user_lang(callback.message.chat.id)
+    settings = ensure_settings(callback.message.chat.id)
+    lang = settings['lang']
     _, fak, group = callback.data.split("_")
     with open(JSON_FILE, 'r', encoding='utf-8') as f: data = json.load(f)
     url = ""
@@ -280,10 +293,14 @@ async def save_fav(callback: types.CallbackQuery):
         await callback.answer(MESSAGES[lang]['fav_ok'], show_alert=True)
 
 async def main():
-    # Webhookni tozalash (Conflict xatosini oldini oladi)
+    # Eng muhim qism: Konfliktni oldini olish
     await bot.delete_webhook(drop_pending_updates=True)
     scheduler.start()
+    logging.info("🚀 Bot ishga tushdi!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Bot to'xtatildi")
