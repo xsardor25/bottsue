@@ -1,6 +1,6 @@
 import json, asyncio, os, logging, warnings, gspread, time, re
 from datetime import datetime
-import pytz # Vaqt mintaqasi uchun
+import pytz 
 from oauth2client.service_account import ServiceAccountCredentials
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -11,7 +11,7 @@ from aiogram.exceptions import TelegramBadRequest
 from playwright.async_api import async_playwright
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# Logs
+# Logs sozlamalari
 logging.basicConfig(level=logging.INFO)
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -21,17 +21,18 @@ JSON_FILE = "tsuedata.json"
 SHEET_ID = "1vZLVKA__HPQAL70HfzI0eYu3MpsE-Namho6D-2RLIYw"
 CREDENTIALS_FILE = "credentials.json"
 
-# Vaqt mintaqasini sozlash
+# Vaqt mintaqasi (Asia/Tashkent)
 TASHKENT_TZ = pytz.timezone('Asia/Tashkent')
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-# Schedulerni Toshkent vaqti bilan ishga tushiramiz
+# Schedulerni vaqt mintaqasi bilan yaratish
 scheduler = AsyncIOScheduler(timezone=TASHKENT_TZ)
 
 class GroupSetup(StatesGroup):
     waiting_for_time = State()
 
+# Xotira va Kesh
 screenshot_cache = {} 
 user_settings = {}    
 favorites_db = {}     
@@ -48,7 +49,7 @@ MESSAGES = {
         'fav_ok': "✅ Guruh saqlandi! Endi /my_table orqali kirishingiz mumkin.",
         'no_fav': "❌ Sizda saqlangan guruh yo'q.",
         'error': "❌ Xatolik yuz berdi.",
-        'group_saved': "✅ Saqlandi! Har {day} kuni soat {time}da (Toshkent vaqti) yuboriladi."
+        'group_saved': "✅ Saqlandi! Har {day} kuni soat {time}da yuboriladi."
     },
     'ru': {
         'start': "Выберите факультет:",
@@ -207,10 +208,8 @@ async def finalize_setup(message, state, v_time):
     h, m = map(int, v_time.split(":"))
     job_id = f"job_{message.chat.id}"
     
-    # Eskisini o'chirish
     if scheduler.get_job(job_id): scheduler.remove_job(job_id)
     
-    # Yangisini Toshkent vaqti bilan qo'shish
     scheduler.add_job(
         send_timetable_auto, 
         "cron", 
@@ -281,10 +280,10 @@ async def save_fav(callback: types.CallbackQuery):
         await callback.answer(MESSAGES[lang]['fav_ok'], show_alert=True)
 
 async def main():
-    # Conflict xatosini oldini olish uchun avvalgi webhooklarni tozalaymiz
+    # Webhookni tozalash (Conflict xatosini oldini oladi)
     await bot.delete_webhook(drop_pending_updates=True)
     scheduler.start()
-    logging.info("🚀 Bot va Scheduler Toshkent vaqti bilan ishga tushdi!")
     await dp.start_polling(bot)
 
-if __name__ == "__main__": asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
