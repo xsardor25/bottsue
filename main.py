@@ -1,11 +1,4 @@
-import json
-import asyncio
-import os
-import logging
-import warnings
-import gspread
-import time
-import re
+import json, asyncio, os, logging, warnings, gspread, time, re
 from datetime import datetime
 from oauth2client.service_account import ServiceAccountCredentials
 from aiogram import Bot, Dispatcher, types, F
@@ -15,8 +8,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from playwright.async_api import async_playwright
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from aiogram.exceptions import TelegramBadRequest
 
-# Logs sozlamalari
+# Logs
 logging.basicConfig(level=logging.INFO)
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -30,13 +24,11 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 scheduler = AsyncIOScheduler()
 
-# --- HOLATLAR (FSM) ---
 class GroupSetup(StatesGroup):
     waiting_for_time = State()
 
-# --- XOTIRA VA KESH ---
 screenshot_cache = {} 
-user_settings = {}    # {chat_id: {"lang": "uz", "last_msg": id, "last_pic": id}}
+user_settings = {} # Foydalanuvchi sozlamalari
 favorites_db = {}     
 DAYS = {0: "Dushanba", 1: "Seshanba", 2: "Chorshanba", 3: "Payshanba", 4: "Juma", 5: "Shanba", 6: "Yakshanba"}
 
@@ -50,7 +42,7 @@ MESSAGES = {
         'fav_btn': "⭐ Sevimlilarga saqlash",
         'fav_ok': "✅ Guruh saqlandi! Endi /my_table orqali kirishingiz mumkin.",
         'no_fav': "❌ Sizda saqlangan guruh yo'q.",
-        'error': "❌ Xatolik yuz berdi. Qaytadan urinib ko'ring.",
+        'error': "❌ Xatolik yuz berdi.",
         'group_saved': "✅ Sozlamalar saqlandi! Har {day} kuni soat {time}da yuboriladi."
     },
     'ru': {
@@ -62,10 +54,16 @@ MESSAGES = {
         'fav_btn': "⭐ Сохранить в избранное",
         'fav_ok': "✅ Группа сохранена! Используйте /my_table.",
         'no_fav': "❌ У вас нет сохраненной группы.",
-        'error': "❌ Ошибка. Попробуйте снова.",
+        'error': "❌ Ошибка.",
         'group_saved': "✅ Сохранено! Будет отправляться в {day} в {time}."
     }
 }
+
+# --- Yordamchi Funksiya: Sozlamalarni xavfsiz olish ---
+def get_user_lang(chat_id):
+    if chat_id not in user_settings:
+        user_settings[chat_id] = {'lang': 'uz'}
+    return user_settings[chat_id]['lang']
 
 # --- GOOGLE SHEETS ---
 def setup_sheets():
@@ -97,14 +95,14 @@ def save_to_sheets(user, faculty, url):
         favorites_db[uid] = url
     except: pass
 
-# --- SKRINSHOT VA TOZALASH ---
+# --- SKRINSHOT ---
 async def take_screenshot(url, filename):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu"])
         page = await browser.new_page(viewport={'width': 1280, 'height': 800}, device_scale_factor=2)
         try:
             await page.goto(url, wait_until="networkidle", timeout=60000)
-            await page.add_style_tag(content=".no-print, .main-menu, .footer, #header { display: none !important; } body { background: white !important; }")
+            await page.add_style_tag(content=".no-print, .main-menu, .footer, #header { display: none !important; }")
             target = await page.query_selector(".tt-grid-container")
             await (target or page).screenshot(path=filename)
         finally: await browser.close()
@@ -134,31 +132,36 @@ async def set_lang(callback: types.CallbackQuery):
     with open(JSON_FILE, 'r', encoding='utf-8') as f: data = json.load(f)
     builder = InlineKeyboardBuilder()
     for fak in data.keys(): builder.row(types.InlineKeyboardButton(text=fak.upper(), callback_data=f"fak_{fak}"))
-    await callback.message.edit_text(MESSAGES[lang]['start'], reply_markup=builder.as_markup())
+    try:
+        await callback.message.edit_text(MESSAGES[lang]['start'], reply_markup=builder.as_markup())
+    except TelegramBadRequest: pass
 
 @dp.callback_query(F.data.startswith("fak_"))
 async def fak_select(callback: types.CallbackQuery):
-    lang = user_settings.get(callback.message.chat.id, {}).get('lang', 'uz')
+    lang = get_user_lang(callback.message.chat.id)
     fak = callback.data.split("_")[1]
     with open(JSON_FILE, 'r', encoding='utf-8') as f: data = json.load(f)
     builder = InlineKeyboardBuilder()
     for kurs in data[fak].keys(): builder.row(types.InlineKeyboardButton(text=kurs, callback_data=f"kurs_{fak}_{kurs}"))
-    await callback.message.edit_text(MESSAGES[lang]['start'], reply_markup=builder.as_markup())
+    try:
+        await callback.message.edit_text(MESSAGES[lang]['start'], reply_markup=builder.as_markup())
+    except TelegramBadRequest: pass
 
 @dp.callback_query(F.data.startswith("kurs_"))
 async def kurs_select(callback: types.CallbackQuery):
-    lang = user_settings.get(callback.message.chat.id, {}).get('lang', 'uz')
+    lang = get_user_lang(callback.message.chat.id)
     _, fak, kurs = callback.data.split("_")
     with open(JSON_FILE, 'r', encoding='utf-8') as f: data = json.load(f)
     builder = InlineKeyboardBuilder()
     for g_id in data[fak][kurs].keys(): builder.add(types.InlineKeyboardButton(text=g_id, callback_data=f"gr_{fak}_{kurs}_{g_id}"))
     builder.adjust(3)
-    await callback.message.edit_text(MESSAGES[lang]['start'], reply_markup=builder.as_markup())
+    try:
+        await callback.message.edit_text(MESSAGES[lang]['start'], reply_markup=builder.as_markup())
+    except TelegramBadRequest: pass
 
 @dp.callback_query(F.data.startswith("gr_"))
 async def group_select(callback: types.CallbackQuery, state: FSMContext):
-    chat_id = callback.message.chat.id
-    lang = user_settings.get(chat_id, {}).get('lang', 'uz')
+    lang = get_user_lang(callback.message.chat.id)
     _, fak, kurs, group = callback.data.split("_")
     with open(JSON_FILE, 'r', encoding='utf-8') as f: data = json.load(f)
     url = data[fak][kurs][group]
@@ -169,14 +172,15 @@ async def group_select(callback: types.CallbackQuery, state: FSMContext):
         for i, name in DAYS.items(): builder.row(types.InlineKeyboardButton(text=name, callback_data=f"day_{i}"))
         await callback.message.edit_text(MESSAGES[lang]['select_day'], reply_markup=builder.as_markup())
     else:
-        await send_timetable(chat_id, url, group, lang, fak)
+        await send_timetable(callback.message.chat.id, url, group, lang, fak)
 
 @dp.callback_query(F.data.startswith("day_"))
 async def day_select(callback: types.CallbackQuery, state: FSMContext):
-    lang = user_settings.get(callback.message.chat.id, {}).get('lang', 'uz')
+    lang = get_user_lang(callback.message.chat.id)
     await state.update_data(day=callback.data.split("_")[1])
     builder = InlineKeyboardBuilder()
-    for t in ["08:00", "10:00", "12:00", "16:00", "20:00"]: builder.add(types.InlineKeyboardButton(text=t, callback_data=f"st_{t}"))
+    for t in ["08:00", "10:00", "12:00", "16:00", "20:00"]: 
+        builder.add(types.InlineKeyboardButton(text=t, callback_data=f"st_{t}"))
     builder.adjust(2)
     await state.set_state(GroupSetup.waiting_for_time)
     await callback.message.edit_text(MESSAGES[lang]['select_time'], reply_markup=builder.as_markup())
@@ -192,10 +196,10 @@ async def time_input(message: types.Message, state: FSMContext):
         if len(v_time.split(":")[0]) == 1: v_time = "0" + v_time
         await finalize(message, state, v_time)
     else:
-        await message.answer("❌ Noto'g'ri format! Iltimos, HH:MM ko'rinishida yozing (masalan: 14:20)")
+        await message.answer("❌ HH:MM formatda yozing (masalan 14:20)!")
 
 async def finalize(message, state, v_time):
-    lang = user_settings.get(message.chat.id, {}).get('lang', 'uz')
+    lang = get_user_lang(message.chat.id)
     data = await state.get_data()
     h, m = map(int, v_time.split(":"))
     job_id = f"job_{message.chat.id}"
@@ -206,8 +210,7 @@ async def finalize(message, state, v_time):
 
 @dp.message(Command("my_table"))
 async def my_table(message: types.Message):
-    if message.chat.id not in user_settings: user_settings[message.chat.id] = {'lang': 'uz'}
-    lang = user_settings[message.chat.id].get('lang', 'uz')
+    lang = get_user_lang(message.chat.id)
     uid = str(message.from_user.id)
     try: await message.delete()
     except: pass
@@ -235,8 +238,10 @@ async def send_timetable(chat_id, url, group, lang, fak=""):
         sent = await bot.send_photo(chat_id, types.FSInputFile(fname), caption=f"✅ {group}", reply_markup=kb.as_markup())
         screenshot_cache[url] = {"id": sent.photo[-1].file_id, "time": now}
         user_settings[chat_id]['last_pic'] = sent.message_id
-        os.remove(fname)
-    except: await bot.send_message(chat_id, MESSAGES[lang]['error'])
+        if os.path.exists(fname): os.remove(fname)
+    except Exception as e:
+        logging.error(f"Screenshot Error: {e}")
+        await bot.send_message(chat_id, MESSAGES[lang]['error'])
     finally:
         try: await status.delete()
         except: pass
@@ -246,12 +251,12 @@ async def send_timetable_auto(chat_id, url, group):
     try:
         await take_screenshot(url, fname)
         await bot.send_photo(chat_id, types.FSInputFile(fname), caption=f"🔔 Avtomatik jadval: {group}")
-        os.remove(fname)
+        if os.path.exists(fname): os.remove(fname)
     except: pass
 
 @dp.callback_query(F.data.startswith("sv_"))
 async def save_fav(callback: types.CallbackQuery):
-    lang = user_settings.get(callback.message.chat.id, {}).get('lang', 'uz')
+    lang = get_user_lang(callback.message.chat.id)
     _, fak, group = callback.data.split("_")
     with open(JSON_FILE, 'r', encoding='utf-8') as f: data = json.load(f)
     url = ""
